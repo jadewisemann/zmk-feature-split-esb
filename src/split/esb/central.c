@@ -36,6 +36,8 @@ static bool is_enabled = false;
 static int central_handler_rb(int source, uint8_t *data, uint8_t size);
 static int split_central_esb_send_command(uint8_t source,
                                           struct zmk_split_transport_central_command cmd);
+static int handle_key_position_whole_key(int source, uint8_t *data);
+static int handle_key_position_each(int source, uint8_t *data);
 static int handle_key_position_event(int source, uint8_t *data);
 
 static void notify_transport_status(void);
@@ -43,14 +45,12 @@ static void notify_status_work_cb(struct k_work *_work) { notify_transport_statu
 static K_WORK_DEFINE(notify_status_work, notify_status_work_cb);
 static void peripheral_connected(int pipe) { k_work_submit(&notify_status_work); }
 static void peripheral_disconnected(int pipe) {
-    k_work_submit(&notify_status_work);
-    uint8_t reset_state[POSITION_STATE_DATA_LEN] = {
+    uint8_t reset_pos[POSITION_STATE_DATA_LEN] = {
         0,
     };
-
     int source = PIPE_TO_SOURCE(pipe);
-
-    handle_key_position_event(source, reset_state);
+    handle_key_position_whole_key(source, reset_pos);
+    k_work_submit(&notify_status_work);
 }
 
 static struct esb_conn_cb conn_cb = {
@@ -131,7 +131,7 @@ static struct zmk_split_transport_status split_central_esb_get_status() {
     }
 
     return (struct zmk_split_transport_status){
-        .available = !esb_is_idle(),
+        .available = esb_is_initialized(),
         .enabled = is_enabled,
         .connections = conn,
     };
@@ -173,10 +173,10 @@ static int zmk_split_esb_central_init(void) {
 
 SYS_INIT(zmk_split_esb_central_init, APPLICATION, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT);
 
-static int handle_key_position_event(int source, uint8_t *data) {
+static int handle_key_position_whole_key(int source, uint8_t *data) {
     int ret = 0;
     uint8_t *position_state = slot[source].position_state;
-#if CONFIG_ZMK_SPLIT_ESB_SEND_WHOLE_KEY
+
     for (int i = 0; i < POSITION_STATE_DATA_LEN; ++i) {
         volatile uint32_t changed = (uint32_t)(data[i] ^ position_state[i]);
         while (changed) {
@@ -196,7 +196,14 @@ static int handle_key_position_event(int source, uint8_t *data) {
         }
         position_state[i] = data[i];
     }
-#else
+
+    return 0;
+}
+
+static int handle_key_position_each(int source, uint8_t *data) {
+    int ret = 0;
+    uint8_t *position_state = slot[source].position_state;
+
     struct zmk_split_transport_peripheral_event evt = {
         .type = ZMK_SPLIT_TRANSPORT_PERIPHERAL_EVENT_TYPE_KEY_POSITION_EVENT,
     };
@@ -211,9 +218,16 @@ static int handle_key_position_event(int source, uint8_t *data) {
         -EINVAL) {
         k_work_submit(&notify_status_work);
     }
-#endif
 
     return 0;
+}
+
+static int handle_key_position_event(int source, uint8_t *data) {
+#if CONFIG_ZMK_SPLIT_ESB_SEND_WHOLE_KEY
+    return handle_key_position_whole_key(source, data);
+#else
+    return handle_key_position_each(source, data);
+#endif
 }
 
 static int central_handler_rb(int source, uint8_t *data, uint8_t size) {

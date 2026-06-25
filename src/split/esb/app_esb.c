@@ -196,10 +196,10 @@ static int esb_initialize(void) {
 int zmk_split_esb_init(void) {
     int ret;
     config.mode = IS_PERIPHERAL ? ESB_MODE_PTX : ESB_MODE_PRX;
-    ret = clocks_start();
-    if (ret < 0) {
-        return ret;
-    }
+    // ret = clocks_start();
+    // if (ret < 0) {
+    //     return ret;
+    // }
 
     esb_initialize();
 
@@ -336,8 +336,9 @@ static int handle_data_rb(void) {
     uint8_t len = buffer->length;
     uint8_t *buf = buffer->data;
 
-    __ASSERT(payload.length + len <= RXBUF_SIZE, "payload + buf(%u) > RXBUF_SIZE(%u)",
-             payload.length + len, RXBUF_SIZE);
+    if (payload.length + len > RXBUF_SIZE) {
+        return -ENOMEM;
+    }
 
     memcpy(&buf[len], payload.data, payload.length);
     len += payload.length;
