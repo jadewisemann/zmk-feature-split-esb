@@ -21,6 +21,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_SPLIT_ESB_LOG_LEVEL);
 #include <zmk/event_manager.h>
 #include <zmk/events/position_state_changed.h>
 #include <zmk/events/activity_state_changed.h>
+#include <zmk/events/split_central_status_changed.h>
 #include <zmk/battery.h>
 #include <zmk/events/sensor_event.h>
 #include <zmk/pointing/input_split.h>
@@ -55,12 +56,26 @@ static K_WORK_DEFINE(notify_status_work, notify_status_work_cb);
 
 bool is_central_connected = false;
 void central_connected(int pipe) {
+    if (is_central_connected) {
+        // LOG_WRN("peripheral alive");
+        raise_zmk_split_central_status_changed((struct zmk_split_central_status_changed){
+            .slot = PIPE_TO_SOURCE(pipe),
+            .connected = true,
+        });
+
+        return;
+    }
+
     is_central_connected = true;
     k_work_submit(&notify_status_work);
     k_work_reschedule(&battery_report_work, K_NO_WAIT);
 }
 
 void central_disconnected(int pipe) {
+    if (!is_central_connected) {
+        return;
+    }
+
     is_central_connected = false;
     k_work_submit(&notify_status_work);
     if ((zmk_activity_get_state() != ZMK_ACTIVITY_ACTIVE)) {
@@ -120,11 +135,19 @@ split_peripheral_esb_set_status_callback(zmk_split_transport_peripheral_status_c
 }
 
 static struct zmk_split_transport_status split_peripheral_esb_get_status(void) {
+    // return (struct zmk_split_transport_status){
+    //     .available = esb_is_initialized(),
+    //     .enabled = is_enabled,
+    //     .connections = is_central_connected ?
+    //     ZMK_SPLIT_TRANSPORT_CONNECTIONS_STATUS_ALL_CONNECTED
+    //                                         :
+    //                                         ZMK_SPLIT_TRANSPORT_CONNECTIONS_STATUS_DISCONNECTED,
+    // };
+
     return (struct zmk_split_transport_status){
-        .available = esb_is_initialized(),
+        .available = true,
         .enabled = is_enabled,
-        .connections = is_central_connected ? ZMK_SPLIT_TRANSPORT_CONNECTIONS_STATUS_ALL_CONNECTED
-                                            : ZMK_SPLIT_TRANSPORT_CONNECTIONS_STATUS_DISCONNECTED,
+        .connections = ZMK_SPLIT_TRANSPORT_CONNECTIONS_STATUS_ALL_CONNECTED,
     };
 }
 
