@@ -57,12 +57,6 @@ static K_WORK_DEFINE(notify_status_work, notify_status_work_cb);
 bool is_central_connected = false;
 void central_connected(int pipe) {
     if (is_central_connected) {
-        // LOG_WRN("peripheral alive");
-        raise_zmk_split_central_status_changed((struct zmk_split_central_status_changed){
-            .slot = PIPE_TO_SOURCE(pipe),
-            .connected = true,
-        });
-
         return;
     }
 
@@ -188,7 +182,8 @@ SYS_INIT(zmk_split_esb_peripheral_init, APPLICATION, CONFIG_KERNEL_INIT_PRIORITY
 
 static int peripheral_handler_rb(int source, uint8_t *data, uint8_t size) {
     uint8_t type = data[0];
-    ssize_t data_size = get_payload_data_size_evt(type);
+    ssize_t data_size = get_payload_data_size_cmd(type);
+
     if (data_size < 0) {
         return 1;
     }

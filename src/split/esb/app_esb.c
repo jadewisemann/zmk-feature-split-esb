@@ -278,7 +278,7 @@ int send_data(uint8_t source, uint8_t type, void *data) {
 #endif
 }
 
-#define RXBUF_SIZE (CONFIG_ESB_MAX_PAYLOAD_LENGTH * 2)
+#define RXBUF_SIZE (CONFIG_ESB_MAX_PAYLOAD_LENGTH * 3)
 static struct rx_buffer {
     uint8_t length;
     uint8_t data[RXBUF_SIZE];
