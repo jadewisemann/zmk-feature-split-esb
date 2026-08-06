@@ -129,19 +129,12 @@ split_peripheral_esb_set_status_callback(zmk_split_transport_peripheral_status_c
 }
 
 static struct zmk_split_transport_status split_peripheral_esb_get_status(void) {
-    // return (struct zmk_split_transport_status){
-    //     .available = esb_is_initialized(),
-    //     .enabled = is_enabled,
-    //     .connections = is_central_connected ?
-    //     ZMK_SPLIT_TRANSPORT_CONNECTIONS_STATUS_ALL_CONNECTED
-    //                                         :
-    //                                         ZMK_SPLIT_TRANSPORT_CONNECTIONS_STATUS_DISCONNECTED,
-    // };
-
     return (struct zmk_split_transport_status){
-        .available = true,
+        .available = esb_is_initialized(),
         .enabled = is_enabled,
-        .connections = ZMK_SPLIT_TRANSPORT_CONNECTIONS_STATUS_ALL_CONNECTED,
+        .connections = is_central_connected
+                           ? ZMK_SPLIT_TRANSPORT_CONNECTIONS_STATUS_ALL_CONNECTED
+                           : ZMK_SPLIT_TRANSPORT_CONNECTIONS_STATUS_DISCONNECTED,
     };
 }
 

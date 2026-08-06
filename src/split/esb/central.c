@@ -74,12 +74,10 @@ static int split_central_esb_send_command(uint8_t source,
     case ZMK_SPLIT_TRANSPORT_CENTRAL_CMD_TYPE_INVOKE_BEHAVIOR:
     case ZMK_SPLIT_TRANSPORT_CENTRAL_CMD_TYPE_SET_PHYSICAL_LAYOUT:
     case ZMK_SPLIT_TRANSPORT_CENTRAL_CMD_TYPE_SET_HID_INDICATORS:
-        send_data(source, cmd.type, &cmd.data);
+        return send_data(source, cmd.type, &cmd.data);
     default:
-        break;
+        return -ENOTSUP;
     }
-
-    return 0;
 }
 
 static int split_central_esb_get_available_source_ids(uint8_t *sources) {

@@ -194,14 +194,17 @@ static int esb_initialize(void) {
 }
 
 int zmk_split_esb_init(void) {
-    int ret;
     config.mode = IS_PERIPHERAL ? ESB_MODE_PTX : ESB_MODE_PRX;
     // ret = clocks_start();
     // if (ret < 0) {
     //     return ret;
     // }
 
-    esb_initialize();
+    int ret = esb_initialize();
+    if (ret) {
+        LOG_ERR("ESB initialization failed (err %d)", ret);
+        return ret;
+    }
 
 #if CONFIG_ZMK_SPLIT_ESB_USE_WORK_QUEUE_DEDICATED
     init_workqueue(&rx_workqueue);
@@ -402,7 +405,7 @@ static int on_activity_state(const zmk_event_t *eh) {
 #endif
         break;
     case ZMK_ACTIVITY_SLEEP:
-        esb_tdma_stop(true);
+        /* Stopping TDMA here leaves the radio unable to wake the device. */
         break;
     }
 
