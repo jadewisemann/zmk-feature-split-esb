@@ -29,7 +29,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_SPLIT_ESB_LOG_LEVEL);
 #include "common.h"
 #include <esb.h>
 
-volatile static struct peripheral_slot_context slot[PERIPHERAL_COUNT];
+static struct peripheral_slot_context slot[PERIPHERAL_COUNT];
 
 static zmk_split_transport_central_status_changed_cb_t transport_status_cb;
 static bool is_enabled = false;
@@ -49,6 +49,14 @@ static void peripheral_disconnected(int pipe) {
         0,
     };
     int source = PIPE_TO_SOURCE(pipe);
+
+    if (source < 0 || source >= PERIPHERAL_COUNT) {
+        LOG_WRN("disconnect from invalid source(%d)", source);
+        return;
+    }
+
+    /* Release everything this half was holding, otherwise a key that was down
+     * when the link dropped stays stuck until it is pressed again. */
     handle_key_position_whole_key(source, reset_pos);
     k_work_submit(&notify_status_work);
 }
@@ -74,12 +82,12 @@ static int split_central_esb_send_command(uint8_t source,
     case ZMK_SPLIT_TRANSPORT_CENTRAL_CMD_TYPE_INVOKE_BEHAVIOR:
     case ZMK_SPLIT_TRANSPORT_CENTRAL_CMD_TYPE_SET_PHYSICAL_LAYOUT:
     case ZMK_SPLIT_TRANSPORT_CENTRAL_CMD_TYPE_SET_HID_INDICATORS:
-        send_data(source, cmd.type, &cmd.data);
+        /* Missing break here meant a full TX ring silently reported success,
+         * so ZMK never learned the command was dropped. */
+        return send_data(source, cmd.type, &cmd.data);
     default:
-        break;
+        return -ENOTSUP;
     }
-
-    return 0;
 }
 
 static int split_central_esb_get_available_source_ids(uint8_t *sources) {
@@ -231,10 +239,14 @@ static int handle_key_position_event(int source, uint8_t *data) {
 }
 
 static int central_handler_rb(int source, uint8_t *data, uint8_t size) {
+    if (size < 1) {
+        return 0;
+    }
+
     uint8_t type = data[0];
     ssize_t data_size = get_payload_data_size_evt(type);
     if (data_size < 0) {
-        LOG_WRN("INVALID TYPE(%d)", data_size);
+        LOG_WRN("INVALID TYPE(%d)", type);
         return 1;
     }
 

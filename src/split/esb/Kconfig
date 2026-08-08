@@ -10,6 +10,15 @@ config ZMK_SPLIT_ESB_ROLE_CENTRAL
     default y if ZMK_SPLIT_ROLE_CENTRAL
     select ESB_CENTRAL
 
+config ZMK_SPLIT_ESB_PRIORITY
+    int "ESB transport priority"
+    default 1
+    help
+        Lower number priority transports are favored over higher numbers.
+        ZMK_SPLIT_TRANSPORT_{CENTRAL,PERIPHERAL}_REGISTER already referenced
+        this symbol; without a definition the registration section was named
+        after the literal macro text rather than a priority.
+
 endmenu
 
 config ZMK_SPLIT_ESB_PERIPHERAL_ID

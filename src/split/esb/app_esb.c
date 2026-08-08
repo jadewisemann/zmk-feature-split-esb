@@ -194,20 +194,29 @@ static int esb_initialize(void) {
 }
 
 int zmk_split_esb_init(void) {
-    int ret;
     config.mode = IS_PERIPHERAL ? ESB_MODE_PTX : ESB_MODE_PRX;
     // ret = clocks_start();
     // if (ret < 0) {
     //     return ret;
     // }
 
-    esb_initialize();
+    int ret = esb_initialize();
+    if (ret) {
+        /* Starting TDMA on top of a radio that never came up leaves the
+         * transport permanently half-dead instead of visibly failing. */
+        LOG_ERR("esb_initialize failed (err %d)", ret);
+        return ret;
+    }
 
 #if CONFIG_ZMK_SPLIT_ESB_USE_WORK_QUEUE_DEDICATED
     init_workqueue(&rx_workqueue);
 #endif
 
-    esb_tdma_start();
+    ret = esb_tdma_start();
+    if (ret) {
+        LOG_ERR("esb_tdma_start failed (err %d)", ret);
+        return ret;
+    }
 
     return 0;
 }
@@ -279,6 +288,13 @@ int send_data(uint8_t source, uint8_t type, void *data) {
 }
 
 #define RXBUF_SIZE (CONFIG_ESB_MAX_PAYLOAD_LENGTH * 3)
+
+/* `length` below is a uint8_t, and the reassembly loop hands `len - used - 1`
+ * to the rx handler as a uint8_t. Both break silently once the buffer can hold
+ * more than 255 bytes. */
+BUILD_ASSERT(RXBUF_SIZE <= UINT8_MAX,
+             "CONFIG_ESB_MAX_PAYLOAD_LENGTH is too large: RXBUF_SIZE must fit in a uint8_t");
+
 static struct rx_buffer {
     uint8_t length;
     uint8_t data[RXBUF_SIZE];
@@ -311,6 +327,8 @@ static int handle_data_dr(void) {
     LOG_HEXDUMP_DBG(payload.data, payload.length, "rx ");
 
     esb_ctx->rx_handler(source, payload.data, payload.length);
+
+    return 0;
 }
 
 static int handle_data_rb(void) {
@@ -333,40 +351,64 @@ static int handle_data_rb(void) {
 
     struct rx_buffer *buffer = get_buffer(source);
 
-    uint8_t len = buffer->length;
+    size_t len = buffer->length;
     uint8_t *buf = buffer->data;
 
-    if (payload.length + len > RXBUF_SIZE) {
-        return -ENOMEM;
+    if (payload.length > RXBUF_SIZE - len) {
+        /* Whatever is buffered can never be completed now, and returning
+         * -ENOMEM would wedge this source forever: nothing else drains the
+         * reassembly buffer. Drop it and resynchronise on the next header. */
+        LOG_WRN("rx buffer overflow on source %d, dropping %u buffered byte(s)", source,
+                (unsigned)len);
+        buffer->length = 0;
+        len = 0;
+
+        if (payload.length > RXBUF_SIZE) {
+            return 0;
+        }
     }
 
     memcpy(&buf[len], payload.data, payload.length);
     len += payload.length;
 
-    // LOG_WRN("payload: source %d, len %u, total: %u", source, payload.length, len);
-
-    int used = 0;
+    size_t used = 0;
     while (used < len) {
-        uint8_t header = buf[used];
-        if (header != HEADER) {
+        if (buf[used] != HEADER) {
             used++;
             continue;
         }
 
-        uint8_t consumed = esb_ctx->rx_handler(source, &buf[used + 1], len - used - 1);
-        if (consumed == 0) {
+        /* The handler dereferences data[0] unconditionally, so never call it
+         * with an empty frame body - a packet that ends right after a header
+         * byte is normal, the rest arrives in the next one. */
+        size_t avail = len - used - 1;
+        if (avail == 0) {
             break;
         }
 
-        used += consumed + 1;
-        // LOG_WRN("used: %d", used);
+        int consumed = esb_ctx->rx_handler(source, &buf[used + 1], (uint8_t)avail);
+        if (consumed == 0) {
+            /* Incomplete frame, wait for the remainder. */
+            break;
+        }
+
+        if (consumed < 0 || (size_t)consumed > avail) {
+            /* Corrupt frame: skip this header byte and resynchronise rather
+             * than letting `used` run past `len`. */
+            LOG_WRN("rx handler rejected frame on source %d (consumed %d, avail %u)", source,
+                    consumed, (unsigned)avail);
+            used++;
+            continue;
+        }
+
+        used += (size_t)consumed + 1;
     }
 
-    int left = len - used;
-    // LOG_WRN("used: %d, left: %d", used, left);
-
-    memmove(buf, &buf[used], left);
-    buffer->length = left;
+    size_t left = len - used;
+    if (left > 0 && used > 0) {
+        memmove(buf, &buf[used], left);
+    }
+    buffer->length = (uint8_t)left;
 
     return 0;
 }
@@ -394,6 +436,8 @@ static int on_activity_state(const zmk_event_t *eh) {
 
     switch (state_ev->state) {
     case ZMK_ACTIVITY_ACTIVE:
+        /* -EBUSY here just means TDMA was never stopped, which is the normal
+         * case on the central. */
         esb_tdma_start();
         break;
     case ZMK_ACTIVITY_IDLE:
@@ -402,7 +446,13 @@ static int on_activity_state(const zmk_event_t *eh) {
 #endif
         break;
     case ZMK_ACTIVITY_SLEEP:
+#if IS_PERIPHERAL
+        /* Only a peripheral shuts the radio down before deep sleep - it is
+         * woken by its own matrix, not by the radio. The central must keep
+         * listening: stopping it here takes the whole keyboard down and
+         * nothing brings it back until the dongle is re-plugged. */
         esb_tdma_stop(true);
+#endif
         break;
     }
 

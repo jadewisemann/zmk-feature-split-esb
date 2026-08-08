@@ -181,6 +181,10 @@ static int zmk_split_esb_peripheral_init(void) {
 SYS_INIT(zmk_split_esb_peripheral_init, APPLICATION, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT);
 
 static int peripheral_handler_rb(int source, uint8_t *data, uint8_t size) {
+    if (size < 1) {
+        return 0;
+    }
+
     uint8_t type = data[0];
     ssize_t data_size = get_payload_data_size_cmd(type);
 
