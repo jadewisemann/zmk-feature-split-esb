@@ -55,6 +55,47 @@ static void notify_status_work_cb(struct k_work *_work) { notify_transport_statu
 static K_WORK_DEFINE(notify_status_work, notify_status_work_cb);
 
 bool is_central_connected = false;
+
+#if CONFIG_ZMK_SPLIT_ESB_SEND_WHOLE_KEY
+/* Recovery path for lost whole-key state.
+ *
+ * The ARQ layer only protects a frame while the link is up. Two things step
+ * around it entirely: esb_tdma_stop() calls reset_tx_all(), which discards
+ * whatever is still queued, and send_data() fails with -ENOMEM once the TX
+ * ring fills while desynced - a failure the core listener ignores. In both
+ * cases slot.position_state was already updated before the send was attempted,
+ * so the event exists nowhere else: the central keeps stale key state until
+ * this half happens to send another key event. If what was lost carried a
+ * release, that reads as a key stuck down until the next keypress on this
+ * half.
+ *
+ * A whole-key frame carries the complete bitmap, so resending it is
+ * idempotent. Recovery is therefore just "send the current state again":
+ * armed on every failed send, and on every (re)connect to cover frames wiped
+ * by reset_tx_all() or a reboot of either side (after a reboot the zeroed
+ * bitmap is exactly what releases keys the central still holds).
+ *
+ * No locking is needed around slot.position_state: the core raises peripheral
+ * events on the system workqueue and this work runs there too.
+ */
+#define STATE_RESYNC_RETRY_MS 20
+
+static void state_resync_work_handler(struct k_work *work);
+K_WORK_DELAYABLE_DEFINE(state_resync_work, state_resync_work_handler);
+static void state_resync_work_handler(struct k_work *work) {
+    if (!is_central_connected) {
+        /* central_connected() re-arms this; retrying while the link is down
+         * would only refill the TX ring that reset_tx_all() just cleared. */
+        return;
+    }
+
+    if (send_data(PERIPHERAL_ID, ZMK_SPLIT_TRANSPORT_PERIPHERAL_EVENT_TYPE_KEY_POSITION_EVENT,
+                  slot.position_state) < 0) {
+        k_work_reschedule(&state_resync_work, K_MSEC(STATE_RESYNC_RETRY_MS));
+    }
+}
+#endif
+
 void central_connected(int pipe) {
     if (is_central_connected) {
         return;
@@ -63,6 +104,9 @@ void central_connected(int pipe) {
     is_central_connected = true;
     k_work_submit(&notify_status_work);
     k_work_reschedule(&battery_report_work, K_NO_WAIT);
+#if CONFIG_ZMK_SPLIT_ESB_SEND_WHOLE_KEY
+    k_work_reschedule(&state_resync_work, K_NO_WAIT);
+#endif
 }
 
 void central_disconnected(int pipe) {
@@ -100,6 +144,12 @@ split_peripheral_esb_report_event(const struct zmk_split_transport_peripheral_ev
         }
 #if CONFIG_ZMK_SPLIT_ESB_SEND_WHOLE_KEY
         ret = send_data(PERIPHERAL_ID, event->type, slot.position_state);
+        if (ret < 0) {
+            /* slot.position_state was already flipped above, so this event no
+             * longer exists anywhere else - keep retrying the bitmap until it
+             * gets through or the reconnect path takes over. */
+            k_work_reschedule(&state_resync_work, K_MSEC(STATE_RESYNC_RETRY_MS));
+        }
         break;
 #endif
     case ZMK_SPLIT_TRANSPORT_PERIPHERAL_EVENT_TYPE_SENSOR_EVENT:
